@@ -131,11 +131,37 @@ int tree_serialize(const Tree *tree, void **data_out, size_t *len_out) {
 //
 // Returns 0 on success, -1 on error.
 int tree_from_index(ObjectID *id_out) {
-    // Minimal valid tree (empty tree)
-    char buffer[1] = {0};
+    Index index = {0};
 
-    if (object_write(OBJ_TREE, buffer, 0, id_out) != 0)
+    if (index_load(&index) != 0) {
+        printf("index load failed\n");
         return -1;
+    }
+
+    if (index.count == 0) {
+        printf("empty index\n");
+        return -1;
+    }
+
+    char buffer[8192];
+    int len = 0;
+
+    for (int i = 0; i < index.count; i++) {
+        IndexEntry *e = &index.entries[i];
+
+        char hex[65];
+        hash_to_hex(&e->hash, hex);
+
+        len += sprintf(buffer + len, "%o %s %s\n",
+                       e->mode,
+                       e->path,
+                       hex);
+    }
+
+    if (object_write(OBJ_TREE, buffer, len, id_out) != 0) {
+        printf("object_write failed\n");
+        return -1;
+    }
 
     return 0;
 }
