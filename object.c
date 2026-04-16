@@ -93,13 +93,72 @@ int object_exists(const ObjectID *id) {
 
 //
 // Returns 0 on success, -1 on error.
-int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out) {
-    // TODO: Implement
-    (void)type; (void)data; (void)len; (void)id_out;
-    return -1;
-}
 
-// Read an object from the store.
+int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out) {
+    unsigned char hash[32];
+    unsigned int hash_len;
+
+    // Convert type to string
+    const char *type_str;
+    if (type == OBJ_BLOB) type_str = "blob";
+    else if (type == OBJ_TREE) type_str = "tree";
+    else type_str = "commit";
+
+    // Create header
+    char header[64];
+    int header_len = snprintf(header, sizeof(header), "%s %zu", type_str, len) + 1;
+
+    size_t total_size = header_len + len;
+    unsigned char *buffer = malloc(total_size);
+    if (!buffer) return -1;
+
+    memcpy(buffer, header, header_len);
+    memcpy(buffer + header_len, data, len);
+
+    // SHA256 hash
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
+    EVP_DigestUpdate(ctx, buffer, total_size);
+    EVP_DigestFinal_ex(ctx, hash, &hash_len);
+    EVP_MD_CTX_free(ctx);
+
+    memcpy(id_out->hash, hash, 32);
+
+    // Convert to hex
+    char hex[65];
+    for (int i = 0; i < 32; i++)
+        sprintf(hex + i * 2, "%02x", hash[i]);
+
+    // Create directories
+    mkdir(".pes", 0777);
+    mkdir(".pes/objects", 0777);
+
+    char dir[256];
+    snprintf(dir, sizeof(dir), ".pes/objects/%.2s", hex);
+    mkdir(dir, 0777);
+
+    // File path
+    char path[256];
+    snprintf(path, sizeof(path), "%s/%s", dir, hex + 2);
+
+    // Temp file
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+
+    FILE *f = fopen(tmp, "wb");
+    if (!f) {
+        free(buffer);
+        return -1;
+    }
+
+    fwrite(buffer, 1, total_size, f);
+    fclose(f);
+
+    rename(tmp, path);
+
+    free(buffer);
+    return 0;
+}
 //
 // Steps:
 //   1. Build the file path from the hash using object_path()
@@ -122,7 +181,72 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
 // The caller is responsible for calling free(*data_out).
 // Returns 0 on success, -1 on error (file not found, corrupt, etc.).
 int object_read(const ObjectID *id, ObjectType *type_out, void **data_out, size_t *len_out) {
-    // TODO: Implement
-    (void)id; (void)type_out; (void)data_out; (void)len_out;
-    return -1;
+    char hex[65];
+    for (int i = 0; i < 32; i++)
+        sprintf(hex + i * 2, "%02x", id->hash[i]);
+
+    // Build path
+    char path[256];
+    snprintf(path, sizeof(path), ".pes/objects/%.2s/%s", hex, hex + 2);
+
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    rewind(f);
+
+    unsigned char *buffer = malloc(file_size);
+    if (!buffer) {
+        fclose(f);
+        return -1;
+    }
+
+    fread(buffer, 1, file_size, f);
+    fclose(f);
+
+    // 🔥 Integrity check
+    unsigned char new_hash[32];
+    unsigned int hash_len;
+
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
+    EVP_DigestUpdate(ctx, buffer, file_size);
+    EVP_DigestFinal_ex(ctx, new_hash, &hash_len);
+    EVP_MD_CTX_free(ctx);
+
+    if (memcmp(new_hash, id->hash, 32) != 0) {
+        free(buffer);
+        return -1;
+    }
+
+    // Parse header
+    char *space = strchr((char *)buffer, ' ');
+    char *null_byte = strchr((char *)buffer, '\0');
+
+    if (!space || !null_byte) {
+        free(buffer);
+        return -1;
+    }
+
+    // Determine type
+    if (strncmp((char *)buffer, "blob", 4) == 0)
+        *type_out = OBJ_BLOB;
+    else if (strncmp((char *)buffer, "tree", 4) == 0)
+        *type_out = OBJ_TREE;
+    else
+        *type_out = OBJ_COMMIT;
+
+    *len_out = atoi(space + 1);
+
+    *data_out = malloc(*len_out);
+    if (!(*data_out)) {
+        free(buffer);
+        return -1;
+    }
+
+    memcpy(*data_out, null_byte + 1, *len_out);
+
+    free(buffer);
+    return 0;
 }
