@@ -135,10 +135,42 @@ int index_status(const Index *index) {
 //
 // Returns 0 on success, -1 on error.
 int index_load(Index *index) {
-    // TODO: Implement index loading
-    // (See Lab Appendix for logical steps)
-    (void)index;
-    return -1;
+    FILE *f = fopen(".pes/index", "r");
+
+    // If file doesn't exist → empty index
+    if (!f) {
+        index->count = 0;
+        return 0;
+    }
+
+    index->count = 0;
+
+    char line[1024];
+
+    while (fgets(line, sizeof(line), f)) {
+        if (index->count >= MAX_INDEX_ENTRIES) break;
+
+        IndexEntry *e = &index->entries[index->count];
+
+        char hash_hex[65];
+
+        sscanf(line, "%o %64s %lu %u %s",
+               &e->mode,
+               hash_hex,
+               &e->mtime_sec,
+               &e->size,
+               e->path);
+
+        // Convert hex → binary
+        for (int i = 0; i < 32; i++) {
+            sscanf(hash_hex + i * 2, "%2hhx", &e->hash.hash[i]);
+        }
+
+        index->count++;
+    }
+
+    fclose(f);
+    return 0;
 }
 
 // Save the index to .pes/index atomically.
@@ -152,10 +184,27 @@ int index_load(Index *index) {
 //
 // Returns 0 on success, -1 on error.
 int index_save(const Index *index) {
-    // TODO: Implement atomic index saving
-    // (See Lab Appendix for logical steps)
-    (void)index;
-    return -1;
+    FILE *f = fopen(".pes/index", "w");
+    if (!f) return -1;
+
+    for (int i = 0; i < index->count; i++) {
+        const IndexEntry *e = &index->entries[i];
+
+        char hash_hex[65];
+        for (int j = 0; j < 32; j++) {
+            sprintf(hash_hex + j * 2, "%02x", e->hash.hash[j]);
+        }
+
+        fprintf(f, "%o %s %lu %u %s\n",
+                e->mode,
+                hash_hex,
+                e->mtime_sec,
+                e->size,
+                e->path);
+    }
+
+    fclose(f);
+    return 0;
 }
 
 // Stage a file for the next commit.
@@ -167,9 +216,41 @@ int index_save(const Index *index) {
 //   - index_find                       : checking if the file is already staged
 //
 // Returns 0 on success, -1 on error.
+#include <time.h>
+
 int index_add(Index *index, const char *path) {
-    // TODO: Implement file staging
-    // (See Lab Appendix for logical steps)
-    (void)index; (void)path;
-    return -1;
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    rewind(f);
+
+    void *data = malloc(size);
+    fread(data, 1, size, f);
+    fclose(f);
+
+    ObjectID oid;
+    if (object_write(OBJ_BLOB, data, size, &oid) != 0) {
+        free(data);
+        return -1;
+    }
+
+    free(data);
+
+    // Check if file already exists
+    IndexEntry *e = index_find(index, path);
+
+    if (!e) {
+        if (index->count >= MAX_INDEX_ENTRIES) return -1;
+        e = &index->entries[index->count++];
+    }
+
+    e->mode = 0100644;
+    e->hash = oid;
+    e->size = size;
+    e->mtime_sec = time(NULL);
+    strcpy(e->path, path);
+
+    return index_save(index);
 }
