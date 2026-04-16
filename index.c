@@ -249,7 +249,9 @@ int index_add(Index *index, const char *path) {
     e->mode = 0100644;
     e->hash = oid;
     e->size = size;
-    e->mtime_sec = time(NULL);
+    struct stat st;
+    stat(path, &st);
+    e->mtime_sec = st.st_mtime;
     strcpy(e->path, path);
 
     return index_save(index);
